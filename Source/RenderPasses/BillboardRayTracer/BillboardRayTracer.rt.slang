@@ -66,12 +66,31 @@ struct RayPayload
     float depth; // rayTCurrent of intersection
 };
 
-// Payload for spherical billboards
+/* Payload for spherical billboards
 struct BillboardPayload
 {
     float3 colorSum; // weighted-blended OIT data
     float alphaSum; // weighted-blended OIT data
     float transmit; // total transmittance (visibility)
+    float rayTMax; // ray T to next triangle
+    RayFootprint footprint; // ray differentials for texture filtering
+};
+*/
+
+// Payload for spherical billboards
+struct BillboardPayload
+{
+    float3 colorSum1; // weighted-blended OIT data
+    float distance1;
+    float3 colorSum2; // weighted-blended OIT data
+    float distance2;
+    float3 colorSum3; // weighted-blended OIT data
+    float distance3;
+    float3 colorSum4; // weighted-blended OIT data
+    float distance4;
+    float3 colorSum5; // weighted-blended OIT data
+    float distance5;
+    uint count;
     float rayTMax; // ray T to next triangle
     RayFootprint footprint; // ray differentials for texture filtering
 };
@@ -176,6 +195,36 @@ void boxIntersect()
     }
 }
 
+
+/*
+uint hash( uint x ) {
+    x += ( x << 10u );
+    x ^= ( x >>  6u );
+    x += ( x <<  3u );
+    x ^= ( x >> 11u );
+    x += ( x << 15u );
+    return x;
+}
+
+float random( float f ) {
+        const uint mantissaMask = 0x007FFFFFu;
+        const uint one          = 0x3F800000u;
+       
+        uint h = hash( floatBitsToInt( f ) );
+        h &= mantissaMask;
+        h |= one;
+        
+        float  r2 = intBitsToFloat( h );
+        return r2 - 1.0;
+}
+*/
+
+
+float random(float2 co){
+    float a = sin(dot(co, float2(12.9898, 78.233))* 43758.5453);
+    return abs(a - uint(a));
+}
+
 [shader("anyhit")]
 void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAttributes attribs : SV_IntersectionAttributes)
 {
@@ -197,15 +246,40 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
         volumeFootprint.hitSurface(v.normalW, travelledDistance, WorldRayDirection()); // transfer to surface
         BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
         // rgb = (pre-multiplied) color, a = transmittance (1 - alpha)
-        float4 curColor = shadeBillboard(sd, v.billboardDepth, v.billboardDepth * 0.5);
+        float4 curColor = shadeBillboard(sd, v.billboardDepth);
     #endif // color us in curColor
-
+    
+    if(curColor.a == 0.0) return;
+    float alpha = abs(curColor.a-1);
+    float reversealpha = 1.0 / alpha;
+    float tcurrent = RayTCurrent();
     // do color accumulation as in weighted-blended OIT
-    float alpha = 1.0 - curColor.a;
-    float weight = getDepthWeight(alpha, RayTCurrent());
-    rayData.colorSum += curColor.rgb * weight;
-    rayData.alphaSum += alpha * weight;
-    rayData.transmit *= curColor.a; // curColor.a = transmittance
+    if (tcurrent < rayData.distance1 && random(float2(1.0/tcurrent))< alpha)
+    {
+        rayData.colorSum1 = curColor.rgb*reversealpha;
+        rayData.distance1 = tcurrent;
+    }
+    if (tcurrent < rayData.distance2 && random(float2(1.0/(tcurrent+1)))< alpha)
+    {
+        rayData.colorSum2 = curColor.rgb*reversealpha;
+        rayData.distance2 = tcurrent;
+    }
+    if (tcurrent < rayData.distance3 && random(float2(1.0/(tcurrent+2)))< alpha)
+    {
+        rayData.colorSum3 = curColor.rgb*reversealpha;
+        rayData.distance3 = tcurrent;
+    }
+    if (tcurrent < rayData.distance4 && random(1.0/(tcurrent+3))< alpha)
+    {
+        rayData.colorSum4 = curColor.rgb*reversealpha;
+        rayData.distance4 = tcurrent;
+    }
+    if (tcurrent < rayData.distance5 && random(1.0/(tcurrent+4))< alpha)
+    {
+        rayData.colorSum5 = curColor.rgb*reversealpha;
+        rayData.distance5 = tcurrent;
+    }
+    rayData.count += 1;
 
     if(curColor.a == 0.0) return; // opaque object => abort (hopefully ignores most of the objects behind this one)
     //if(rayData.transmit <= TRANSMIT_EPSILON) return; // this can cause some weird spherical shaped artifacts
@@ -222,6 +296,8 @@ void boxClosestHit(inout RayPayload rayData : SV_RayPayload, BoxIntersectionAttr
     rayData.hit.x = attribs.aabbOffset; // this is the only relevant data for now
 }
 
+
+
 /****** Ray Kernel for Bilboards ******/
 
 #if USE_WEIGHTED_OIT
@@ -232,17 +308,55 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     BillboardPayload volumePayload;
     volumePayload.footprint = footprint;
     volumePayload.rayTMax = ray.TMax;
-    volumePayload.colorSum = 0.0;
-    volumePayload.alphaSum = 0.0;
-    volumePayload.transmit = 1.0;
-
+    volumePayload.distance1 = ray.TMax;
+    volumePayload.distance2 = ray.TMax;
+    volumePayload.distance3 = ray.TMax;
+    volumePayload.distance4 = ray.TMax;
+    volumePayload.distance5 = ray.TMax;
+    volumePayload.colorSum1 = float3(0.0);
+    volumePayload.colorSum2 = float3(0.0);
+    volumePayload.colorSum3 = float3(0.0);
+    volumePayload.colorSum4 = float3(0.0);
+    volumePayload.colorSum5 = float3(0.0);
+    volumePayload.count = 0;
     TraceRay(gRtScene, RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xff /* instanceInclusionMask */, 0 /* hitIdx */, hitProgramCount, 0 /* missIdx */, ray, volumePayload);
 
     // use weighted-blended OIT to calculate the color
-    if(volumePayload.transmit < 1.0) {
-        color += transmit * (volumePayload.colorSum / volumePayload.alphaSum) * (1.0 - volumePayload.transmit);
-        transmit *= volumePayload.transmit;
+    float3 tempcolor = 0;
+    uint hits = 0;
+    if (abs(volumePayload.colorSum1.r) + abs(volumePayload.colorSum1.g)+abs(volumePayload.colorSum1.b)>0){
+        hits +=1;
+        tempcolor += volumePayload.colorSum1;
     }
+    if (abs(volumePayload.colorSum2.r) + abs(volumePayload.colorSum2.g)+abs(volumePayload.colorSum2.b)>0){
+        hits +=1;
+        tempcolor += volumePayload.colorSum2;
+    }
+    if (abs(volumePayload.colorSum3.r) + abs(volumePayload.colorSum3.g)+abs(volumePayload.colorSum3.b)>0){
+        hits +=1;
+        tempcolor += volumePayload.colorSum3;
+    }
+    if (abs(volumePayload.colorSum4.r) + abs(volumePayload.colorSum4.g)+abs(volumePayload.colorSum4.b)>0){
+        hits +=1;
+        tempcolor += volumePayload.colorSum4;
+    }
+    if (abs(volumePayload.colorSum5.r) + abs(volumePayload.colorSum5.g)+abs(volumePayload.colorSum5.b)>0){
+        hits +=1;
+        tempcolor += volumePayload.colorSum5;
+    }
+    float temp_transmit = 1 - (float(hits)/5.0);
+    if(hits>0)
+    {
+    tempcolor = tempcolor/float(hits);
+    }
+    if(volumePayload.count >0) {
+        color += transmit * tempcolor * (1.0 - temp_transmit);// = float(hits)/5.0; //+= transmit * tempcolor * (1.0 - temp_transmit);
+        transmit *= temp_transmit;
+    }/*
+    else{
+        color += transmit * tempcolor * (1.0 - temp_transmit);//float3(0.5, 0, 0);//float(hits)/5.0; //+= transmit * tempcolor * (1.0 - temp_transmit);
+        transmit; // *= (1-curColor1.a);
+    }*/
 }
 
 #else // closest-hit ray tracing with alpha blending (no weighted OIT)
