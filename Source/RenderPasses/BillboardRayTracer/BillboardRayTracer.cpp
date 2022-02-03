@@ -29,6 +29,7 @@
 #include "RenderGraph/RenderPassHelpers.h"
 #include "Experimental/Scene/Material/TexLODTypes.slang"
 #include "Scene/HitInfo.h"
+#define TRANSPARENT_DEPTH 16
 
  // Don't remove this. it's required for hot-reload to function properly
 extern "C" __declspec(dllexport) const char* getProjDir()
@@ -47,7 +48,7 @@ namespace
 
     // Ray tracing settings that affect the traversal stack size.
     // These should be set as small as possible.
-    const uint32_t kMaxPayloadSizeBytes = std::max<uint32_t>(/* default RayPayload */HitInfo::kMaxPackedSizeInBytes + 4, /* BillboardPayload */18 * 4);
+    const uint32_t kMaxPayloadSizeBytes = std::max<uint32_t>(/* default RayPayload */HitInfo::kMaxPackedSizeInBytes + 4, /* BillboardPayload */(2* TRANSPARENT_DEPTH + 16) * 4);
     const uint32_t kMaxAttributesSizeBytes = 8u;
     const uint32_t kMaxRecursionDepth = 1u;
 
@@ -59,6 +60,7 @@ namespace
     const ChannelList kOutputChannels =
     {
         { "color",          "gOutputColor",               "Output color (sum of direct and indirect)"                },
+        {"debug",           "gDebug",                     "Debug information"},
     };
 
     const Gui::DropdownList kRayFootprintModeList =
@@ -67,13 +69,6 @@ namespace
         //{ (uint32_t)TexLODMode::RayCones, "Ray Cones" },
         //{ (uint32_t)TexLODMode::RayDiffsIsotropic, "Ray diffs (isotropic)" },
         { (uint32_t)TexLODMode::RayDiffsAnisotropic, "Ray diffs (anisotropic)" },
-    };
-
-    const Gui::DropdownList kBillboardTypeList =
-    {
-        { (uint32_t)BillboardRayTracer::BillboardType::Impostor, "Impostor" },
-        { (uint32_t)BillboardRayTracer::BillboardType::Particle, "Particle" },
-        { (uint32_t)BillboardRayTracer::BillboardType::Spherical, "Spherical" },
     };
 };
 
@@ -142,14 +137,8 @@ void BillboardRayTracer::execute(RenderContext* pRenderContext, const RenderData
         defines.add("RAY_CONE_MODE", "1");
         defines.add("RAY_FOOTPRINT_USE_MATERIAL_ROUGHNESS", "1");
         // billboard data
-        defines.add("BILLBOARD_TYPE", std::to_string(mBillboardType));
-        defines.add("BILLBOARD_TYPE_IMPOSTOR", std::to_string((uint)BillboardType::Impostor));
-        defines.add("BILLBOARD_TYPE_PARTICLE", std::to_string((uint)BillboardType::Particle));
-        defines.add("BILLBOARD_TYPE_SPHERICAL", std::to_string((uint)BillboardType::Spherical));
         defines.add("USE_REFLECTION_CORRECTION", mReflectionCorrection ? "true" : "false");
         defines.add("USE_REFRACTION_CORRECTION", mRefractionCorrection ? "true" : "false");
-        defines.add("USE_SOFT_PARTICLES", mSoftParticles ? "true" : "false");
-        defines.add("USE_PARTICLE_WEIGHTED_OIT", mParticleWeightedTransparency ? "1" : "0");
         defines.add("BILLBOARD_MATERIAL_ID", std::to_string(mLastMaterialId));
         defines.add("USE_SHADOWS", mShadows ? "true" : "false");
         defines.add("USE_RANDOM_BILLBOARD_COLORS", mRandomColors ? "true" : "false");
@@ -219,28 +208,15 @@ void BillboardRayTracer::renderUI(Gui::Widgets& widget)
         dirty = true;
     widget.tooltip("The ray footprint (texture LOD) mode to use.");
 
-    if (widget.dropdown("Billboard type", kBillboardTypeList, mBillboardType))
-        dirty = true;
-    widget.tooltip("Impostor: y-aligned, Particle: origin-oriented, Spherical: Spherical shaped volume");
-
     if (widget.checkbox("Reflection correction", mReflectionCorrection)) dirty = true;
     widget.tooltip("Ray origin correction for impostors and particles");
     if (widget.checkbox("Refraction correction", mRefractionCorrection)) dirty = true;
     widget.tooltip("Ray origin correction for impostors and particles");
 
-    if(mBillboardType == (uint)BillboardType::Particle)
-    {
-        if (widget.checkbox("Soft particles", mSoftParticles)) dirty = true;
-        if (widget.checkbox("Use weighted OIT", mParticleWeightedTransparency)) dirty = true;
-        widget.tooltip("Use any-hit shading with weighted OIT instead of closest-hit ray tracing with alpha blending");
-    }
 
-    if (mBillboardType != (uint)BillboardType::Impostor)
-    {
-        //if(widget.checkbox("Deep billboard samples", mDeepBillboardSamples)) dirty = true;
-        if (widget.var("Deep shadow samples", mDeepBillboardSamples, 1, 32)) dirty = true;
-        widget.tooltip("Shadow samples will be taken from front- and backface of the billboard");
-    }
+    //if(widget.checkbox("Deep billboard samples", mDeepBillboardSamples)) dirty = true;
+    if (widget.var("Deep shadow samples", mDeepBillboardSamples, 1, 32)) dirty = true;
+    widget.tooltip("Shadow samples will be taken from front- and backface of the billboard");
 
     if (widget.checkbox("Shadows", mShadows)) dirty = true;
     if (widget.checkbox("Random Colors", mRandomColors)) dirty = true;
@@ -267,12 +243,6 @@ void BillboardRayTracer::setScene(RenderContext* pRenderContext, const Scene::Sh
     {
         mLastMaterialId = pScene->getMaterialCount() - 1;
         mTracer.pProgram->addDefines(pScene->getSceneDefines());
-
-        // get last material name for hint about billboard type
-        auto matName = pScene->getMaterial(mLastMaterialId)->getName();
-        if(matName == "Impostor") mBillboardType = (uint)BillboardType::Impostor;
-        else if (matName == "Particle") mBillboardType = (uint)BillboardType::Particle;
-        else if(matName == "Spherical") mBillboardType = (uint)BillboardType::Spherical;
     }
 
     mOptionsChanged = true;

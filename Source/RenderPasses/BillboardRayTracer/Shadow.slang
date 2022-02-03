@@ -50,11 +50,8 @@ float TraceShadowRay(float3 origin, LightData l)
     }
 
     // prepare ray query (do all computations in the "any-hit shader")
-#if BILLBOARD_TYPE == BILLBOARD_TYPE_IMPOSTOR
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_FORCE_NON_OPAQUE | /* no shadows for impostors */ RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
-#else
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_FORCE_NON_OPAQUE> q;
-#endif
+
+RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_FORCE_NON_OPAQUE> q;
     q.TraceRayInline(gRtScene, RAY_FLAG_NONE, 0xff /* instanceInclusionMask */, ray);
     float transmit = 1.0;
 

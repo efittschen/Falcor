@@ -34,6 +34,7 @@ def render_graph_DefaultRenderGraph():
     g.addEdge('BillboardRayTracer.color', 'ToneMapper.src')
     g.markOutput('ToneMapper.dst')
     g.markOutput('BillboardRayTracer.color')
+    g.markOutput('BillboardRayTracer.debug')
     return g
 m.addGraph(render_graph_DefaultRenderGraph())
 

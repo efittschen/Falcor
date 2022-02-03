@@ -48,8 +48,7 @@ import Scene.Material.BRDF;
 #define AMBIENT_LIGHT 0.3
 #define MAX_BOUNCES 16
 #define MAX_INTERNAL_REFLECTIONS 8
-
-#define USE_WEIGHTED_OIT ((BILLBOARD_TYPE == BILLBOARD_TYPE_SPHERICAL) || (BILLBOARD_TYPE == BILLBOARD_TYPE_PARTICLE && USE_PARTICLE_WEIGHTED_OIT))
+#define TRANSPARENT_DEPTH 8
 
 cbuffer CB
 {
@@ -58,7 +57,7 @@ cbuffer CB
 
 // Outputs
 RWTexture2D<float4> gOutputColor;
-
+RWTexture2D<float4> gDebug;
 // Default ray payload
 struct RayPayload
 {
@@ -69,11 +68,13 @@ struct RayPayload
 // Payload for spherical billboards
 struct BillboardPayload
 {
-    float3 colorSum; // weighted-blended OIT data
-    float alphaSum; // weighted-blended OIT data
-    float transmit; // total transmittance (visibility)
-    float rayTMax; // ray T to next triangle
+    uint spheres[TRANSPARENT_DEPTH];
+    float tcurrent[TRANSPARENT_DEPTH];
     RayFootprint footprint; // ray differentials for texture filtering
+    uint pos;
+    float rayTMax; // ray T to next triangle
+    float listMax; //transparent object furthest away
+    float listMin; //closest possible transparent object
 };
 
 
@@ -128,89 +129,64 @@ void boxIntersect()
     const float2 dim = bbox.extent().xy; // w = dim.x, h = dim.y
     const float3 C = bbox.center();
 
-    switch(BILLBOARD_TYPE)
-    {
-    case BILLBOARD_TYPE_IMPOSTOR:
-    case BILLBOARD_TYPE_PARTICLE: {
-        const bool yAlign = BILLBOARD_TYPE == BILLBOARD_TYPE_IMPOSTOR;
-        const bool particle = BILLBOARD_TYPE == BILLBOARD_TYPE_PARTICLE;
-    
-        // billboard plane base
-        const float3x3 planeBase = GetBillboardTangentSpace(WorldRayOrigin() - C, yAlign);
-        // ray origin and direction in plane space
-        const float3 dp = mul(planeBase, WorldRayDirection());
-        const float3 Op = mul(planeBase, WorldRayOrigin() - C);
-        //const float3 Op = float3(0.0, 0.0, length(WorldRayOrigin() - C)); // alternative if normal is always normalize(WorldRayOrigin() - C)
+    const float r = 0.5 * dim.x;
+    const float t = dot(WorldRayDirection(), C - WorldRayOrigin());
+    const float l = length(WorldRayOrigin() - C + t * WorldRayDirection());
+    if(l >= r) return;
+    const float w = sqrt(r * r - l * l);
+    const float rayTIn = max(RayTMin(), t - w);
+    const float ds = min(/*TMax*/ RayTCurrent(), t + w) - rayTIn;
+    if(ds <= 0.0) return;
 
-        // ray intersection parameter:
-	    // Op + s * dp = (Xp.x, Xp.y, 0) with Xp = intersection point of plane
-        const float s = -Op.z / dp.z;
-        if(s <= RayTMin()) return; // use <= instead of < to avoid self intersection when casting a new ray (because we set ray.TMin = s before casting a new ray)
-        const float2 Pp = Op.xy + s * dp.xy;
-    
-        // check if on plane
-        if(any(abs(Pp) > 0.5 * dim)) return;
-        // more general formula for particle test that also works with elliptical particles (dim.x/2 == r != dim.y/2)
-	    //if(particle && (4.0 * Pp.x * Pp.x / (dim.x * dim.x) + 4.0 * Pp.y  * Pp.y  / (dim.y * dim.y) > 1.0)) return;
-        if(particle && Pp.x * Pp.x + Pp.y * Pp.y >= dim.x * dim.x * 0.25) return;
-
-        BoxIntersectionAttributes attribs;
-        attribs.aabbOffset = aabbOffset;
-        ReportHit(s, 0, attribs);
-    
-    } break;
-    case BILLBOARD_TYPE_SPHERICAL: {
-        const float r = 0.5 * dim.x;
-        const float t = dot(WorldRayDirection(), C - WorldRayOrigin());
-        const float l = length(WorldRayOrigin() - C + t * WorldRayDirection());
-        if(l >= r) return;
-        const float w = sqrt(r * r - l * l);
-        const float rayTIn = max(RayTMin(), t - w);
-        const float ds = min(/*TMax*/ RayTCurrent(), t + w) - rayTIn;
-        if(ds <= 0.0) return;
-
-        BoxIntersectionAttributes attribs;
-        attribs.aabbOffset = aabbOffset;
-        ReportHit(rayTIn, 0, attribs);
-    } break;
-    }
+    BoxIntersectionAttributes attribs;
+    attribs.aabbOffset = aabbOffset;
+    ReportHit(rayTIn, 0, attribs);
 }
 
 [shader("anyhit")]
 void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAttributes attribs : SV_IntersectionAttributes)
 {
-#if USE_WEIGHTED_OIT
-    #if BILLBOARD_TYPE == BILLBOARD_TYPE_SPHERICAL
-        // get vertex data, transfer ray differentials and obtain shading data
-        BillboardVertex v = getSphericalBillboardVertexData(attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), RayTMin(), rayData.rayTMax);
-        RayFootprint volumeFootprint = rayData.footprint; // copy footprint and transfer to hit surface
-        const AABB bbox = gScene.proceduralPrimitiveAABBs[attribs.aabbOffset];
-        volumeFootprint.hitSphere(v.normalW, /*reconstruct original ray origin*/ WorldRayOrigin() + RayTMin() * WorldRayDirection(), WorldRayDirection(), RayTCurrent() - RayTMin(), bbox.center(), 0.5 * bbox.extent().x); // transfer to surface
-        BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
-        float4 curColor = shadeBillboard(sd, v.billboardDepth);
-    #elif BILLBOARD_TYPE == BILLBOARD_TYPE_PARTICLE
-        // get vertex data, transfer ray differentials and obtain shading data
-        BillboardVertex v = getBillboardVertexData(attribs.aabbOffset, WorldRayOrigin(),  WorldRayDirection(), RayTCurrent(), RayTMin(), rayData.rayTMax);
-        // transfer ray differentials and get shading data
-        float travelledDistance = RayTCurrent() - RayTMin();
-        RayFootprint volumeFootprint = rayData.footprint; // copy footprint and transfer to hit surface
-        volumeFootprint.hitSurface(v.normalW, travelledDistance, WorldRayDirection()); // transfer to surface
-        BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
-        // rgb = (pre-multiplied) color, a = transmittance (1 - alpha)
-        float4 curColor = shadeBillboard(sd, v.billboardDepth, v.billboardDepth * 0.5);
-    #endif // color us in curColor
 
-    // do color accumulation as in weighted-blended OIT
-    float alpha = 1.0 - curColor.a;
-    float weight = getDepthWeight(alpha, RayTCurrent());
-    rayData.colorSum += curColor.rgb * weight;
-    rayData.alphaSum += alpha * weight;
-    rayData.transmit *= curColor.a; // curColor.a = transmittance
+    // get vertex data, transfer ray differentials and obtain shading data
+    BillboardVertex v = getSphericalBillboardVertexData(attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), RayTMin(), rayData.rayTMax);
+    RayFootprint volumeFootprint = rayData.footprint; // copy footprint and transfer to hit surface
+    const AABB bbox = gScene.proceduralPrimitiveAABBs[attribs.aabbOffset];
+    volumeFootprint.hitSphere(v.normalW, /*reconstruct original ray origin*/ WorldRayOrigin() + RayTMin() * WorldRayDirection(), WorldRayDirection(), RayTCurrent() - RayTMin(), bbox.center(), 0.5 * bbox.extent().x); // transfer to surface
+    BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
+    float4 curColor = shadeBillboard(sd, v.billboardDepth);
+    float tcurrent = RayTCurrent();
+    if(tcurrent > rayData.listMin){
+    if(rayData.pos < TRANSPARENT_DEPTH){
+        [unroll] for(uint i=0; i< TRANSPARENT_DEPTH; i++){
+            if(i==rayData.pos)
+            {
+                rayData.spheres[i] = attribs.aabbOffset;
+                rayData.tcurrent[i] = tcurrent;
+                rayData.listMax = max(tcurrent, rayData.listMax);
+            }
+        }
+        rayData.pos= rayData.pos +1;
+    }
+    else{
+        if(tcurrent < rayData.listMax)
+        {
+            float newListMax = 0;
+            [unroll] for(uint i=0; i< TRANSPARENT_DEPTH; i++){
+                if(rayData.tcurrent[i]==rayData.listMax)
+                {
+                    rayData.spheres[i] = attribs.aabbOffset;
+                    rayData.tcurrent[i] = tcurrent;
+                }
+                newListMax = max(rayData.tcurrent[i], newListMax);
+            }
+            rayData.listMax = newListMax;
+        }
+    }
+    }
 
-    if(curColor.a == 0.0) return; // opaque object => abort (hopefully ignores most of the objects behind this one)
+    //if(curColor.a == 0.0) return; // opaque object => abort (hopefully ignores most of the objects behind this one)
     //if(rayData.transmit <= TRANSMIT_EPSILON) return; // this can cause some weird spherical shaped artifacts
     IgnoreHit(); // do not accept the hit in general => keep any-hit traversal going
-#endif
 }
 
 [shader("closesthit")]
@@ -224,7 +200,6 @@ void boxClosestHit(inout RayPayload rayData : SV_RayPayload, BoxIntersectionAttr
 
 /****** Ray Kernel for Bilboards ******/
 
-#if USE_WEIGHTED_OIT
 
 void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayFootprint footprint)
 {
@@ -232,55 +207,156 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     BillboardPayload volumePayload;
     volumePayload.footprint = footprint;
     volumePayload.rayTMax = ray.TMax;
-    volumePayload.colorSum = 0.0;
-    volumePayload.alphaSum = 0.0;
-    volumePayload.transmit = 1.0;
+    volumePayload.pos = 0;
+    volumePayload.listMax = 0;
+    volumePayload.listMin = 0;
+
+    VolumeNode total;
+    total.color =0;
+    total.transmit =1;
+
+    to_sort sorted[2*TRANSPARENT_DEPTH];
+    int index[TRANSPARENT_DEPTH]= {0};
+    int active = 0;
+    float old = -0.0001;
 
     TraceRay(gRtScene, RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xff /* instanceInclusionMask */, 0 /* hitIdx */, hitProgramCount, 0 /* missIdx */, ray, volumePayload);
+    VolumeNode list[TRANSPARENT_DEPTH];
 
+//    [unroll] for(uint k = 0; k< 1 && volumePayload.listMax != 0; k++){
+    for (uint i = 0; i < TRANSPARENT_DEPTH; i++)
+  {
+    VolumeNode temp;
+    temp.depthStart = 0;
+    temp.depthEnd = 0;
+    temp.transmit = 0.5;
+    list[i] = temp;
+  }
+    for (uint i = 0; i < volumePayload.pos&&i<TRANSPARENT_DEPTH; i++)
+  {
+    VolumeNode temp;
+    BillboardVertex v =
+      getSphericalBillboardVertexData (volumePayload.spheres[i], ray.Origin,
+				       ray.Direction,
+				       volumePayload.tcurrent[i], ray.TMin,
+				       volumePayload.rayTMax);
+    RayFootprint volumeFootprint = volumePayload.footprint;	// copy footprint and transfer to hit surface
+    const AABB bbox =
+      gScene.proceduralPrimitiveAABBs[volumePayload.spheres[i]];
+    volumeFootprint.hitSphere (v.normalW, /*reconstruct original ray origin */ ray.Origin + ray.TMin * ray.Direction, ray.Direction, volumePayload.tcurrent[i] - ray.TMin, bbox.center (), 0.5 * bbox.extent ().x);	// transfer to surface
+    BillboardShadingData sd =
+      prepareBillboardShadingData (v, volumeFootprint,
+				   volumePayload.spheres[i], ray.Origin,
+				   ray.Direction);
+    float4 curColor = shadeBillboard(sd, v.billboardDepth);
+    temp.color = curColor.rgb;
+    temp.transmit = curColor.a;
+    temp.depthStart = volumePayload.tcurrent[i];
+    temp.depthEnd = min(volumePayload.tcurrent[i] + v.billboardDepth, volumePayload.rayTMax-0.0001);
+    list[i] = temp;
+  }
+    
+    
+
+
+
+    [unroll] for(uint i =0; i<TRANSPARENT_DEPTH; i++){
+        to_sort temp_start, temp_end;
+        temp_end.index = i;
+        temp_start.index = i;
+        temp_start.end = 0;
+        temp_end.end = 1;
+        temp_start.value = list[i].depthStart;
+        temp_end.value = list[i].depthEnd;
+        sorted[2*i]=temp_start;
+        sorted[2*i+1]= temp_end;
+    }
+    
+    //Bubble sort
+    
+    uint i, j;
+    uint n= 2*TRANSPARENT_DEPTH;
+    [unroll] for (i = 0; i < n-1; i++){    
+    for (j = 0; j < n-i-1; j++){
+        if (sorted[j].value > sorted[j+1].value){
+            to_sort temp = sorted[j];
+            sorted[j]= sorted[j+1];
+            sorted[j+1]= temp;
+        }
+    }
+    }
+    
+    /*
+    //Insertion sort felix bachelorarbeit 
+    uint i, j;
+    uint n= 2*TRANSPARENT_DEPTH;
+    [unroll] for(int i = 1; i<n; ++i){
+    for(int j =i; j>0&& sorted[j-1].value > sorted[j].value;--j)
+    {
+        to_sort tmp = sorted[j];
+        sorted[j]=sorted[j-1];
+        sorted[j-1] = sorted[j];
+    }
+    }
+    */
+    
+    [unroll] for(uint i = 0; i<2*TRANSPARENT_DEPTH; i++){
+        to_sort temp = sorted[i];
+        if(active&&temp.value!=old)
+        {
+            VolumeNode merge;
+            merge.depthEnd=old;
+            merge.depthStart = old;
+            [unroll] for(uint j = 0; j<TRANSPARENT_DEPTH; j++)
+            {
+                if(index[j])
+                {
+                    VolumeNode to_merge = list[j];
+                    if(to_merge.depthEnd!=temp.value)
+                    {
+                        VolumeNode left, right;
+                        to_merge.Split(left, right, temp.value);
+                        to_merge = left;
+                        list[j]= right;
+                    }
+                    else{
+                        active--;
+                        index[j]=0;
+                    }
+                    if(merge.depthEnd == merge.depthStart)
+                        {
+                            merge = to_merge;
+                        }
+                    else{
+                            merge = merge.Merge(merge,to_merge);
+                        }
+                }
+            }
+            if(merge.depthEnd != merge.depthStart)
+            {
+                total = total.Over(merge);
+                //total = merge.Over(total);
+            }
+        }
+        if(!temp.end)
+        {
+            active++;
+            index[temp.index]=1;
+        }
+        
+    }
+    
     // use weighted-blended OIT to calculate the color
-    if(volumePayload.transmit < 1.0) {
-        color += transmit * (volumePayload.colorSum / volumePayload.alphaSum) * (1.0 - volumePayload.transmit);
-        transmit *= volumePayload.transmit;
+    if( volumePayload.pos > 0)
+    {
+    uint ind = 2*(7);
+    //color = float3(0, list[sorted[ind].index].depthStart, list[sorted[ind].index].depthEnd);//
+    //transmit = 0;
+    color += transmit *total.color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
+    transmit *= total.transmit;
     }
 }
 
-#else // closest-hit ray tracing with alpha blending (no weighted OIT)
-
-void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayFootprint footprint)
-{
-    RayPayload volumePayload;
-    volumePayload.depth = 0.0;
-    float prevRayMin = ray.TMin; // save original ray min (ray.TMin will be modified at the end of the loop)
-
-    uint iteration = 0;
-    do // trace volumetric data
-    {
-        volumePayload.hit.x = uint(-1); // set invalid hit
-        TraceRay(gRtScene, RAY_FLAG_SKIP_TRIANGLES, 0xff /* instanceInclusionMask */, 0 /* hitIdx */, hitProgramCount, 0 /* missIdx */, ray, volumePayload);
-
-        if(volumePayload.hit.x == uint(-1)) break; // no more billboard intersections
-        
-        BillboardVertex v = getBillboardVertexData(volumePayload.hit.x, ray.Origin, ray.Direction, volumePayload.depth, prevRayMin, ray.TMax);
-
-        // transfer ray differentials and get shading data
-        float travelledDistance = volumePayload.depth - prevRayMin;
-        RayFootprint volumeFootprint = footprint; // copy footprint and transfer to hit surface
-        volumeFootprint.hitSurface(v.normalW, travelledDistance, ray.Direction); // transfer to surface
-        BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, volumePayload.hit.x, ray.Origin, ray.Direction);
-        // rgb = (pre-multiplied) color, a = transmittance (1 - alpha)
-        float4 curColor = shadeBillboard(sd, v.billboardDepth, v.billboardDepth * 0.5);
-
-
-        color += transmit * curColor.rgb; // update color
-        transmit *= curColor.a; // update visibility
-
-        // prepare next ray
-        ray.TMin = volumePayload.depth;
-    } while(transmit > TRANSMIT_EPSILON);
-}
-
-#endif
 
 /****** Ray Generation ******/
 [shader("raygeneration")]
@@ -365,13 +441,13 @@ void rayGen()
             // update ray differentials
             footprint.bounceOnSurface(v, triangleVertices, hit, sd.N, ray.Direction, refracted, true);
             ray.Direction = refracted;
-            if(USE_REFRACTION_CORRECTION) { // apply ray origin correction for billboards
+            /*if(USE_REFRACTION_CORRECTION) { // apply ray origin correction for billboards
                 ray.Origin = sd.computeNewRayOrigin(false) - refracted * correctionDepth;
                 ray.TMin = correctionDepth;
-            } else { // cast new ray from intersection point
+            } else { */// cast new ray from intersection point
                 ray.Origin = sd.computeNewRayOrigin(false);
                 ray.TMin = 0.0;
-            }
+            /*}*/
         }
         else if(isReflective) // reflect ray
         {
@@ -379,13 +455,13 @@ void rayGen()
             // update ray differentials
             footprint.bounceOnSurface(v, triangleVertices, hit, sd.N, ray.Direction, reflected, false);
             ray.Direction = reflected;
-            if(USE_REFLECTION_CORRECTION) { // apply ray origin correction for billboards
+            /*if(USE_REFLECTION_CORRECTION) { // apply ray origin correction for billboards
                 ray.Origin = sd.computeNewRayOrigin() - reflected * correctionDepth;
                 ray.TMin = correctionDepth;
-            } else { // cast new ray from intersection point
+            } else { */// cast new ray from intersection point
                 ray.Origin = sd.computeNewRayOrigin();
                 ray.TMin = 0.0;
-            }
+            /*}*/
         }
         else transmit = 0.0; // stop tracing rays
     } while(++iteration < MAX_BOUNCES && transmit > TRANSMIT_EPSILON);

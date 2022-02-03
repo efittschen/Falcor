@@ -90,58 +90,47 @@ extension RayFootprint
     {
         // reconstruct billboard plane
         const AABB bbox = gScene.proceduralPrimitiveAABBs[aabbIndex];
-        const float2 dim = bbox.extent().xy;
-        const float r = dim.x * 0.5;
+        const float r = bbox.extent().x * 0.5;
 
         float2 dUVdx, dUVdy;    // Ray differential variables for the texture lookup.
-        #if BILLBOARD_TYPE == BILLBOARD_TYPE_SPHERICAL
-        {
-            // from pbrt http://www.pbr-book.org/3ed-2018/Texture/Sampling_and_Antialiasing.html#FindingtheTextureSamplingRate
-            const float3 n = v.normalW;
-            const float2 uv = v.texC;
+        // from pbrt http://www.pbr-book.org/3ed-2018/Texture/Sampling_and_Antialiasing.html#FindingtheTextureSamplingRate
+        const float3 n = v.normalW;
+        const float2 uv = v.texC;
 
-            int dim[2];
-            if(abs(n.x) > abs(n.y) && abs(n.x) > abs(n.z)) {
-                dim[0] = 1; dim[1] = 2;
-            } else if (abs(n.y) > abs(n.z)) {
-                dim[0] = 0; dim[1] = 2;
-            } else {
-                dim[0] = 0; dim[1] = 1;
-            }
-            
-            // change of position per texture coordinate direction (UV-sphere)
-            //float theta = (uv.x - BILLBOARD_UV_OFFSET(aabbIndex)) * 2.0 * M_PI;
-            //float phi = M_PI * uv.y;
-            //float sinphi = sin(phi);
-            //float cosphi = cos(phi);
-            //float sintheta = sin(theta);
-            //float costheta = cos(theta);
-            //const float3 dpdu = float3(-sinphi*sintheta,0.0,sinphi*costheta) * 2.0 * M_PI * r;
-            //const float3 dpdv = float3(cosphi*costheta,-sinphi,cosphi*sintheta) * M_PI * r;
-            // simplified computation when replacing theta and phi with the normal (theta = arctan(n.z, n.x), phi = arccos(n.y))
-            float denom = 1.0 / sqrt(n.x * n.x + n.z * n.z);
-            float invysq = sqrt(1.0 - n.y * n.y);
-            const float3 dpdu = float3(-n.z * invysq * denom, 0.0, n.x * invysq * denom) * 2.0 * M_PI * r;
-            const float3 dpdv = float3(n.y * n.x * denom, -invysq, n.z * n.y * denom) * M_PI * r;
-            
-            float2x2 A;
-            A[0][0] = dpdu[dim[0]]; A[0][1] = dpdv[dim[0]];
-            A[1][0] = dpdu[dim[1]]; A[1][1] = dpdv[dim[1]];
-            
-            float2 Bx = float2(this.rayDiff.dOdx[dim[0]], this.rayDiff.dOdx[dim[1]]);
-            float2 By = float2(this.rayDiff.dOdy[dim[0]], this.rayDiff.dOdy[dim[1]]);
-            
-            if(!SolveLinearSystem2x2(A, Bx, dUVdx)) dUVdx = 0.0;
-            if(!SolveLinearSystem2x2(A, By, dUVdy)) dUVdy = 0.0;
+        int dim[2];
+        if(abs(n.x) > abs(n.y) && abs(n.x) > abs(n.z)) {
+            dim[0] = 1; dim[1] = 2;
+        } else if (abs(n.y) > abs(n.z)) {
+            dim[0] = 0; dim[1] = 2;
+        } else {
+            dim[0] = 0; dim[1] = 1;
         }
-        #else
-        {
-            dUVdx.x = dot(this.rayDiff.dOdx, v.tangentW) / dim[0];
-            dUVdx.y = dot(this.rayDiff.dOdx, v.bitangentW) / dim[1];
-            dUVdy.x = dot(this.rayDiff.dOdy, v.tangentW) / dim[0];
-            dUVdy.y = dot(this.rayDiff.dOdy, v.bitangentW) / dim[1];
-        }
-        #endif
+            
+        // change of position per texture coordinate direction (UV-sphere)
+        //float theta = (uv.x - BILLBOARD_UV_OFFSET(aabbIndex)) * 2.0 * M_PI;
+        //float phi = M_PI * uv.y;
+        //float sinphi = sin(phi);
+        //float cosphi = cos(phi);
+        //float sintheta = sin(theta);
+        //float costheta = cos(theta);
+        //const float3 dpdu = float3(-sinphi*sintheta,0.0,sinphi*costheta) * 2.0 * M_PI * r;
+        //const float3 dpdv = float3(cosphi*costheta,-sinphi,cosphi*sintheta) * M_PI * r;
+        // simplified computation when replacing theta and phi with the normal (theta = arctan(n.z, n.x), phi = arccos(n.y))
+        float denom = 1.0 / sqrt(n.x * n.x + n.z * n.z);
+        float invysq = sqrt(1.0 - n.y * n.y);
+        const float3 dpdu = float3(-n.z * invysq * denom, 0.0, n.x * invysq * denom) * 2.0 * M_PI * r;
+        const float3 dpdv = float3(n.y * n.x * denom, -invysq, n.z * n.y * denom) * M_PI * r;
+            
+        float2x2 A;
+        A[0][0] = dpdu[dim[0]]; A[0][1] = dpdv[dim[0]];
+        A[1][0] = dpdu[dim[1]]; A[1][1] = dpdv[dim[1]];
+            
+        float2 Bx = float2(this.rayDiff.dOdx[dim[0]], this.rayDiff.dOdx[dim[1]]);
+        float2 By = float2(this.rayDiff.dOdy[dim[0]], this.rayDiff.dOdy[dim[1]]);
+            
+        if(!SolveLinearSystem2x2(A, Bx, dUVdx)) dUVdx = 0.0;
+        if(!SolveLinearSystem2x2(A, By, dUVdy)) dUVdy = 0.0;
+       
 
         // Compute shading data.
         float3 viewDir = -rayDir;
@@ -232,8 +221,7 @@ BillboardShadingData prepareBillboardShadingData(BillboardVertex v, RayFootprint
 #ifdef BILLBOARD_ALPHA_MULTIPLIER
     sd.opacity *= BILLBOARD_ALPHA_MULTIPLIER;
 #endif
-    if(BILLBOARD_TYPE == BILLBOARD_TYPE_PARTICLE) sd.opacity *= v.billboardStrength;
-    if(BILLBOARD_TYPE == BILLBOARD_TYPE_SPHERICAL && sd.opacity < 1.0) sd.opacity = clamp(1.0 - pow(1.0 - sd.opacity, v.billboardStrength), 0.0, 1.0);
+    if(sd.opacity < 1.0) sd.opacity = clamp(1.0 - pow(1.0 - sd.opacity, v.billboardStrength), 0.0, 1.0);
     if(USE_RANDOM_BILLBOARD_COLORS)
     {
         sd.diffuse *= gRandomColors[aabbIndex % 6];

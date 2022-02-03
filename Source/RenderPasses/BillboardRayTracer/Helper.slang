@@ -27,6 +27,93 @@
  **************************************************************************/
 
 // structs -----------
+struct VolumeNode
+{
+    float depthStart;
+    float depthEnd;
+    float3 color;
+    float transmit;
+
+    // Splits the volume node at split pos (from "The Theory of OpenEXR Deep Samples" 2013)
+    void Split(out VolumeNode left, out VolumeNode right, float splitPos)
+    {
+        left.depthStart = depthStart;
+        left.depthEnd = splitPos;
+        right.depthStart = splitPos;
+        right.depthEnd = depthEnd;
+
+        float t = (splitPos - depthStart) / (depthEnd - depthStart);
+        left.transmit = pow(transmit, t);
+        right.transmit = pow(transmit, 1.0 - t);
+
+        // assume transmit < 1
+        if(transmit<1)
+        {
+            left.color = color * (1.0 - left.transmit) / (1.0 - transmit);
+            right.color = color * (1.0 - right.transmit) / (1.0 - transmit);
+        }
+    }
+
+    //changed 1-transmit to transmit
+    VolumeNode Over(VolumeNode n1)
+    {
+        VolumeNode res;
+        res.color = color + (transmit)*n1.color;
+        res.transmit = (1-((1-transmit) + (transmit)*(1-n1.transmit)));
+        return res;
+    }
+
+
+    // merges two volume nodes of equal length (from "The Theory of OpenEXR Deep Samples" 2013)
+    static VolumeNode Merge(VolumeNode n1, VolumeNode n2)
+    {
+        VolumeNode res;
+        res.depthStart = n1.depthStart;
+        res.depthEnd = n1.depthEnd;
+        res.transmit = n1.transmit * n2.transmit;
+
+        res.color = 0.0;
+        if(n1.transmit == 0.0) res.color += n1.color;
+        if(n2.transmit == 0.0) res.color += n2.color;
+        if(n1.transmit != 0.0 && n2.transmit != 0.0) {
+            float logn1 = log(n1.transmit);
+            float logn2 = log(n2.transmit);
+            if(n1.transmit!= 1.0){
+                
+                res.color = n1.color * logn1 / (1.0 - n1.transmit);
+            }
+            else{
+                res.color = -1*n1.color;
+            }
+            if(n2.transmit!= 1.0)
+            {
+                
+                res.color += n2.color * logn2 / (1.0 - n2.transmit);
+            }
+            else{
+                res.color += -1*n2.color;
+            }
+            if(logn1 + logn2 != 0)
+            {
+                res.color *= (1.0 - res.transmit) / (logn1 + logn2);
+            }
+            
+        }
+        if(n1.transmit == 1 || n2.transmit == 1)
+        {
+            res.color = n1.color;
+        }
+        res.color = abs(res.color);
+
+        return res;
+    }
+};
+
+struct to_sort{
+    uint index;
+    uint end;
+    float value;
+};
 
 struct BillboardShadingData
 {
@@ -44,10 +131,6 @@ struct BillboardVertex
     float2 texC; // texture coordinates
     float  billboardDepth; // depth ds of the billboard vertex
     float  billboardStrength; // For particles: soft particle opacity factor; For sphericals: Normalized distance to the billboard center (1-(d/r))*(ds / 2r)
-#if BILLBOARD_TYPE != BILLBOARD_TYPE_SPHERICAL
-    float3 tangentW; // tangent for ray differentials
-    float3 bitangentW; // bitangent for ray differentials
-#endif
 };
 
 // helper function to fetch material data from texture
@@ -95,26 +178,15 @@ BillboardVertex getBillboardVertexData(uint aabbOffset, float3 rayOrigin, float3
     const float3 C = bbox.center();
 
     // billboard plane base
-    const bool yAlign = BILLBOARD_TYPE == BILLBOARD_TYPE_IMPOSTOR;
+    const bool yAlign = false;
     const float3x3 planeBase = GetBillboardTangentSpace(rayOrigin - C, yAlign);
 
     // fill out important vertex data
     v.posW = rayOrigin + rayDirection * rayTCurrent;
-#if BILLBOARD_TYPE != BILLBOARD_TYPE_SPHERICAL
-    v.tangentW = planeBase[0];
-    v.bitangentW = planeBase[1];
-#endif
     v.normalW = planeBase[2];
     v.texC.x = dot(C - v.posW, planeBase[0]) / dim.x + 0.5;
     v.texC.y = dot(C - v.posW, planeBase[1]) / dim.y + 0.5;
     v.billboardStrength = 1.0;
-    if(BILLBOARD_TYPE == BILLBOARD_TYPE_PARTICLE && USE_SOFT_PARTICLES)
-    {
-        float blendScale = 8.0 / dim.x;
-        float outFade = getSoftParticleContrast((rayTMax - rayTCurrent) * blendScale);
-        float inFade = getSoftParticleContrast((rayTCurrent - rayTMin) * blendScale);
-        v.billboardStrength = min(outFade, inFade);
-    }
 
     v.billboardDepth = dim.x - length(C - v.posW) * 2.0; // for soft shadows
     //v.billboardDepth = sqrt(dim.x * dim.x * 0.25 - dot(C - v.posW, C - v.posW)) * 2.0;
@@ -169,15 +241,7 @@ float3 evalBillboardMaterial(BillboardShadingData sd, LightData light)
     else return 0.0;
 
     // volumetric shading?
-    if(BILLBOARD_TYPE != BILLBOARD_TYPE_IMPOSTOR) return max(ls.diffuse * sd.diffuse, 0.0);
-
-    // If the light doesn't hit the surface or we are viewing the surface from the back, return
-    ls.NdotL = dot(sd.N, ls.L);
-    if (ls.NdotL <= 0) return 0.0;
-
-    // Calculate the diffuse term
-    float3 color = ls.diffuse * sd.diffuse.rgb * (1 / M_PI) * ls.NdotL;
-    return color;
+    return max(ls.diffuse * sd.diffuse, 0.0);
 }
 
 // shading function for billboards that iterates though all lights and traces shadow rays for the primary light source
@@ -243,7 +307,7 @@ float getDepthWeight(float alpha, float z)
     const float far = gScene.camera.data.farZ;
     float f = ((near * far) / clamp(z, near, far) - far) / (near - far);
     
-    float w = 10 * (1 - 0.99 * f); // modification: did not include alpha here (looks better for smoke)
-    return clamp(w * w * w, 0.01, 3000.0) * alpha;
+    float w = (1 - 0.99 * f); // modification: did not include alpha here (looks better for smoke)
+    return clamp(w * w * w*10 , 0.01, 3000) * alpha;
     //return 1.0;
 }
