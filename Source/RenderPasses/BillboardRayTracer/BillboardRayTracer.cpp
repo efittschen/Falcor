@@ -48,7 +48,7 @@ namespace
 
     // Ray tracing settings that affect the traversal stack size.
     // These should be set as small as possible.
-    const uint32_t kMaxPayloadSizeBytes = std::max<uint32_t>(/* default RayPayload */HitInfo::kMaxPackedSizeInBytes + 4, /* BillboardPayload */(2* TRANSPARENT_DEPTH + 16) * 4);
+    const uint32_t kMaxPayloadSizeBytes = std::max<uint32_t>(/* default RayPayload */HitInfo::kMaxPackedSizeInBytes + 4, /* BillboardPayload */(2* TRANSPARENT_DEPTH + 16+5) * 4);
     const uint32_t kMaxAttributesSizeBytes = 8u;
     const uint32_t kMaxRecursionDepth = 1u;
 

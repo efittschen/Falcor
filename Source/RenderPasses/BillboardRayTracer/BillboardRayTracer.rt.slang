@@ -48,7 +48,7 @@ import Scene.Material.BRDF;
 #define AMBIENT_LIGHT 0.3
 #define MAX_BOUNCES 16
 #define MAX_INTERNAL_REFLECTIONS 8
-#define TRANSPARENT_DEPTH 8
+#define TRANSPARENT_DEPTH 16
 
 cbuffer CB
 {
@@ -70,6 +70,8 @@ struct BillboardPayload
 {
     uint spheres[TRANSPARENT_DEPTH];
     float tcurrent[TRANSPARENT_DEPTH];
+    float4 leftover;
+    float t_leftover;
     RayFootprint footprint; // ray differentials for texture filtering
     uint pos;
     float rayTMax; // ray T to next triangle
@@ -153,7 +155,8 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
     const AABB bbox = gScene.proceduralPrimitiveAABBs[attribs.aabbOffset];
     volumeFootprint.hitSphere(v.normalW, /*reconstruct original ray origin*/ WorldRayOrigin() + RayTMin() * WorldRayDirection(), WorldRayDirection(), RayTCurrent() - RayTMin(), bbox.center(), 0.5 * bbox.extent().x); // transfer to surface
     BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
-    float4 curColor = shadeBillboard(sd, v.billboardDepth);
+    //float4 curColor = shadeBillboard(sd, v.billboardDepth);
+    float4 maxColor = float4(0);
     float tcurrent = RayTCurrent();
     if(tcurrent > rayData.listMin){
     if(rayData.pos < TRANSPARENT_DEPTH){
@@ -174,6 +177,9 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
             [unroll] for(uint i=0; i< TRANSPARENT_DEPTH; i++){
                 if(rayData.tcurrent[i]==rayData.listMax)
                 {
+                    v = getSphericalBillboardVertexData(rayData.spheres[i], WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), RayTMin(), rayData.rayTMax);
+                    sd = prepareBillboardShadingData(v, volumeFootprint, rayData.spheres[i], WorldRayOrigin(), WorldRayDirection());
+                    maxColor = shadeBillboard(sd, v.billboardDepth);
                     rayData.spheres[i] = attribs.aabbOffset;
                     rayData.tcurrent[i] = tcurrent;
                 }
@@ -181,6 +187,22 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
             }
             rayData.listMax = newListMax;
         }
+        else{
+            maxColor = shadeBillboard(sd, v.billboardDepth);
+        }
+        if(rayData.listMax > rayData.t_leftover)
+        {
+            rayData.leftover.rgb += maxColor.rgb * rayData.leftover.a;
+            rayData.leftover.a *= rayData.leftover.a;
+            rayData.t_leftover = rayData.listMax;
+        }
+        else
+        {
+            rayData.leftover.rgb = maxColor.rgb + maxColor.a * rayData.leftover.rgb;
+            rayData.leftover.a*= maxColor.a;
+        }
+        
+
     }
     }
 
@@ -210,6 +232,8 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     volumePayload.pos = 0;
     volumePayload.listMax = 0;
     volumePayload.listMin = 0;
+    volumePayload.leftover = float4(0, 0, 0, 1);
+    volumePayload.t_leftover = 0;
 
     VolumeNode total;
     total.color =0;
@@ -345,7 +369,8 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
         }
         
     }
-    
+    total.color += total.transmit * volumePayload.leftover.rgb;
+    total.transmit *= volumePayload.leftover.a;
     // use weighted-blended OIT to calculate the color
     if( volumePayload.pos > 0)
     {
