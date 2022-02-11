@@ -29,7 +29,7 @@
 #include "RenderGraph/RenderPassHelpers.h"
 #include "Experimental/Scene/Material/TexLODTypes.slang"
 #include "Scene/HitInfo.h"
-#define TRANSPARENT_DEPTH 16
+#define TRANSPARENT_DEPTH 8
 
  // Don't remove this. it's required for hot-reload to function properly
 extern "C" __declspec(dllexport) const char* getProjDir()

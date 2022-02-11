@@ -48,7 +48,7 @@ import Scene.Material.BRDF;
 #define AMBIENT_LIGHT 0.3
 #define MAX_BOUNCES 16
 #define MAX_INTERNAL_REFLECTIONS 8
-#define TRANSPARENT_DEPTH 16
+#define TRANSPARENT_DEPTH 8
 
 cbuffer CB
 {
@@ -157,7 +157,8 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
     BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
     //float4 curColor = shadeBillboard(sd, v.billboardDepth);
     float4 maxColor = float4(0);
-    float tcurrent = RayTCurrent();
+    //float tcurrent = RayTCurrent();
+    float tcurrent = v.t;
     if(tcurrent > rayData.listMin){
     if(rayData.pos < TRANSPARENT_DEPTH){
         [unroll] for(uint i=0; i< TRANSPARENT_DEPTH; i++){
@@ -369,8 +370,8 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
         }
         
     }
-    total.color += total.transmit * volumePayload.leftover.rgb;
-    total.transmit *= volumePayload.leftover.a;
+    //total.color += total.transmit * volumePayload.leftover.rgb;
+    //total.transmit *= volumePayload.leftover.a;
     // use weighted-blended OIT to calculate the color
     if( volumePayload.pos > 0)
     {
@@ -379,6 +380,8 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     //transmit = 0;
     color += transmit *total.color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
     transmit *= total.transmit;
+    color = float3(total.transmit);
+    transmit = 0;
     }
 }
 
