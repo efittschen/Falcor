@@ -55,7 +55,11 @@ sceneBuilder.selectedCamera = camera
 
 ## add billboards
 
-# left side
+# three balls cutting each other
+sceneBuilder.addBillboard(float3(-5.0, 3.0, 10), 2.0, 2.0)
+sceneBuilder.addBillboard(float3(-5.5, 3.0, 11), 2.0, 2.0)
+sceneBuilder.addBillboard(float3(-6.0, 3.0, 10), 2.0, 2.0)
+
 sceneBuilder.addBillboard(float3(5.0, 3.0, 10), 2.0, 2.0)
 sceneBuilder.addBillboard(float3(6, 2.5, 10), 2.0, 2.0)
 

@@ -157,8 +157,7 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
     BillboardShadingData sd = prepareBillboardShadingData(v, volumeFootprint, attribs.aabbOffset, WorldRayOrigin(), WorldRayDirection());
     //float4 curColor = shadeBillboard(sd, v.billboardDepth);
     float4 maxColor = float4(0);
-    //float tcurrent = RayTCurrent();
-    float tcurrent = v.t;
+    float tcurrent = RayTCurrent();
     if(tcurrent > rayData.listMin){
     if(rayData.pos < TRANSPARENT_DEPTH){
         [unroll] for(uint i=0; i< TRANSPARENT_DEPTH; i++){
@@ -242,7 +241,7 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
 
     to_sort sorted[2*TRANSPARENT_DEPTH];
     int index[TRANSPARENT_DEPTH]= {0};
-    int active = 0;
+    
     float old = -0.0001;
 
     TraceRay(gRtScene, RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xff /* instanceInclusionMask */, 0 /* hitIdx */, hitProgramCount, 0 /* missIdx */, ray, volumePayload);
@@ -254,10 +253,12 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     VolumeNode temp;
     temp.depthStart = 0;
     temp.depthEnd = 0;
-    temp.transmit = 0.5;
+    temp.transmit = 1;
+    temp.color = float3(0);
     list[i] = temp;
   }
-    for (uint i = 0; i < volumePayload.pos&&i<TRANSPARENT_DEPTH; i++)
+
+      for (uint i = 0; i < volumePayload.pos&&i<TRANSPARENT_DEPTH; i++)
   {
     VolumeNode temp;
     BillboardVertex v =
@@ -274,12 +275,22 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
 				   volumePayload.spheres[i], ray.Origin,
 				   ray.Direction);
     float4 curColor = shadeBillboard(sd, v.billboardDepth);
-    temp.color = curColor.rgb;
-    temp.transmit = curColor.a;
+     if(abs(curColor.a-1.0) > 0 && abs(v.billboardDepth) > 0)
+    {
+        temp.transmit = pow(curColor.a, 1.0/(v.billboardDepth));
+        //curColor.rgb = curColor.rgb / (1-curColor.a) * (1- temp.transmit);
+        temp.color = (curColor.rgb * log(temp.transmit))/(curColor.a-1.0); //(curColor.rgb * log(curColor.a))/(curColor.a-1.0);
+        
+    }
+    else{
+        temp.color = float3(0);
+        temp.transmit = 1;
+
+    }    
     temp.depthStart = volumePayload.tcurrent[i];
-    temp.depthEnd = min(volumePayload.tcurrent[i] + v.billboardDepth, volumePayload.rayTMax-0.0001);
+    temp.depthEnd = min(volumePayload.tcurrent[i] +  v.billboardDepth, volumePayload.rayTMax-0.0001);
     list[i] = temp;
-  }
+    }
     
     
 
@@ -324,51 +335,62 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     }
     }
     */
-    
+    float3 temp_color = float3(0);
+    float temp_trans = 1;
+    float3 tot_color = float3(0);
+    float  tot_trans = 1;
+    float3 current_color_values = float3(0);
+    float current_transmit_value = 1;
+    float prev_pos = -1;
+    float3 normed_color;
+    uint active = 0;
     [unroll] for(uint i = 0; i<2*TRANSPARENT_DEPTH; i++){
         to_sort temp = sorted[i];
-        if(active&&temp.value!=old)
+        if(active>0)
         {
-            VolumeNode merge;
-            merge.depthEnd=old;
-            merge.depthStart = old;
-            [unroll] for(uint j = 0; j<TRANSPARENT_DEPTH; j++)
+            if(prev_pos != -1 && prev_pos != temp.value)
             {
-                if(index[j])
-                {
-                    VolumeNode to_merge = list[j];
-                    if(to_merge.depthEnd!=temp.value)
-                    {
-                        VolumeNode left, right;
-                        to_merge.Split(left, right, temp.value);
-                        to_merge = left;
-                        list[j]= right;
-                    }
-                    else{
-                        active--;
-                        index[j]=0;
-                    }
-                    if(merge.depthEnd == merge.depthStart)
-                        {
-                            merge = to_merge;
-                        }
-                    else{
-                            merge = merge.Merge(merge,to_merge);
-                        }
-                }
+                temp_trans = pow(current_transmit_value, abs(temp.value - prev_pos));
+                temp_color =current_color_values * (temp_trans-1) / log(current_transmit_value);
+                tot_color = tot_color + (tot_trans * temp_color);
+                tot_trans = tot_trans * temp_trans;
+                
+            /*
+                normed_color = (current_color_values*(current_transmit_value-1.0)) / log(current_transmit_value);
+                temp_trans = pow(current_transmit_value, abs(temp.value - prev_pos));
+                temp_color = normed_color * (1-temp_trans) / current_transmit_value;
+                tot_color = tot_color + (tot_trans * temp_color);
+                tot_trans = tot_trans * temp_trans;
+                
+                temp_trans = pow(current_transmit_value, abs(temp.value - prev_pos));
+                temp_color = (current_color_values*(temp_trans-1.0)) / log(temp_trans);
+                tot_color = tot_color + (tot_trans * temp_color);
+                tot_trans = tot_trans * temp_trans;
+                */
             }
-            if(merge.depthEnd != merge.depthStart)
-            {
-                total = total.Over(merge);
-                //total = merge.Over(total);
-            }
-        }
-        if(!temp.end)
-        {
-            active++;
-            index[temp.index]=1;
-        }
-        
+         }
+         else
+         {
+                current_color_values = float3(0);
+                current_transmit_value = 1;
+         }
+         prev_pos = temp.value;
+         if(temp.end == 0)
+         {
+             active = active +1;
+             current_color_values.r = max(current_color_values.r + list[temp.index].color.r, 0);
+             current_color_values.g = max(current_color_values.g + list[temp.index].color.g, 0);
+             current_color_values.b = max(current_color_values.b + list[temp.index].color.b, 0);
+             current_transmit_value =min(current_transmit_value*list[temp.index].transmit, 1);
+         }
+         if(temp.end == 1)
+         {
+             active = active -1;
+             current_color_values.r = max(current_color_values.r - list[temp.index].color.r, 0);
+             current_color_values.g = max(current_color_values.g - list[temp.index].color.g, 0);
+             current_color_values.b = max(current_color_values.b - list[temp.index].color.b, 0);
+             current_transmit_value = min(current_transmit_value/list[temp.index].transmit, 1);
+         }
     }
     //total.color += total.transmit * volumePayload.leftover.rgb;
     //total.transmit *= volumePayload.leftover.a;
@@ -378,10 +400,10 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
     uint ind = 2*(7);
     //color = float3(0, list[sorted[ind].index].depthStart, list[sorted[ind].index].depthEnd);//
     //transmit = 0;
-    color += transmit *total.color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
-    transmit *= total.transmit;
-    color = float3(total.transmit);
-    transmit = 0;
+    color += transmit *tot_color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
+    transmit *= tot_trans;// *= tot_trans;
+    //color = float3(total.transmit);
+    //transmit = 0;
     }
 }
 
