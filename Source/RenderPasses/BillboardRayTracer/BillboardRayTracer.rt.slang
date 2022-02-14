@@ -193,7 +193,7 @@ void boxAnyHit(inout BillboardPayload rayData : SV_RayPayload, BoxIntersectionAt
         if(rayData.listMax > rayData.t_leftover)
         {
             rayData.leftover.rgb += maxColor.rgb * rayData.leftover.a;
-            rayData.leftover.a *= rayData.leftover.a;
+            rayData.leftover.a *= maxColor.a;
             rayData.t_leftover = rayData.listMax;
         }
         else
@@ -392,16 +392,24 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
              current_transmit_value = min(current_transmit_value/list[temp.index].transmit, 1);
          }
     }
-    //total.color += total.transmit * volumePayload.leftover.rgb;
-    //total.transmit *= volumePayload.leftover.a;
+    
+    tot_color += tot_trans * volumePayload.leftover.rgb;
+    tot_trans *= volumePayload.leftover.a;
+    
     // use weighted-blended OIT to calculate the color
     if( volumePayload.pos > 0)
     {
     uint ind = 2*(7);
     //color = float3(0, list[sorted[ind].index].depthStart, list[sorted[ind].index].depthEnd);//
     //transmit = 0;
-    color += transmit *tot_color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
-    transmit *= tot_trans;// *= tot_trans;
+    
+    color += transmit *tot_color;// transmit *volumePayload.leftover.rgb; //transmit *tot_color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
+    transmit *= tot_trans;//volumePayload.leftover.a; //tot_trans;// *= tot_trans;
+    
+    /*
+    color +=  transmit *volumePayload.leftover.rgb; //transmit *tot_color;//volumePayload.listMax;//float3(total.transmit, list[sorted[volumePayload.pos].index].depthStart, list[sorted[volumePayload.pos].index].depthEnd);//total.color;//float3(list[0].depthEnd, list[0].depthStart, list[0].depthEnd- list[0].depthStart);
+    transmit *= volumePayload.leftover.a; //tot_trans;// *= tot_trans;
+    */
     //color = float3(total.transmit);
     //transmit = 0;
     }
