@@ -48,7 +48,7 @@ import Scene.Material.BRDF;
 #define AMBIENT_LIGHT 0.3
 #define MAX_BOUNCES 16
 #define MAX_INTERNAL_REFLECTIONS 8
-#define TRANSPARENT_DEPTH 8
+#define TRANSPARENT_DEPTH 32
 
 cbuffer CB
 {
@@ -348,7 +348,7 @@ void traceBillboards(inout float3 color, inout float transmit, RayDesc ray, RayF
         to_sort temp = sorted[i];
         if(active>0)
         {
-            if(prev_pos != -1 && prev_pos != temp.value)
+            if(prev_pos != -1 && prev_pos != temp.value && log(current_transmit_value) != 0 )
             {
                 temp_trans = pow(current_transmit_value, abs(temp.value - prev_pos));
                 temp_color =current_color_values * (temp_trans-1) / log(current_transmit_value);
