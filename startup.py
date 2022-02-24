@@ -39,7 +39,7 @@ def render_graph_DefaultRenderGraph():
 m.addGraph(render_graph_DefaultRenderGraph())
 
 # Scene
-m.loadScene('../BillboardScenes/test_area/test_area_spheres.pyscene')
+m.loadScene('../BillboardScenes/test_area/test_area_spheres_only2.pyscene')
 m.scene.renderSettings = SceneRenderSettings(useEnvLight=True, useAnalyticLights=True, useEmissiveLights=True, useVolumes=True)
 
 # Window Configuration
